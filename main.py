@@ -61,12 +61,11 @@ async def handler(event):
         # 如果是文本消息
         if msg.text:
             await client.send_message(target_channel, text)
+            print(f"转发文本: {text[:30]} 到 {target_channel}")  # 输出前30个字符
         # 如果是媒体消息（图片/视频）
         elif msg.media:
             await client.send_file(target_channel, msg.media, caption=text)
-
-        print(f"从 {source_channel} 转发到 {target_channel} 成功: {text[:30]}")  # 输出转发的前30个字符
-
+            print(f"转发媒体消息到 {target_channel}")  # 输出转发的媒体消息
     except Exception as e:
         print("错误:", e)
 
