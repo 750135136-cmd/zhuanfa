@@ -8,8 +8,8 @@ api_id = 25559912
 api_hash = '22d3bb9665ad7e6a86e89c1445672e07'
 session_name = "session"
 # 监听-目标频道配对，同时支持：
-# 1. 用户名格式：@xxx （公开频道用）
-# 2. 频道ID格式：-100xxxxxxxxxx （私有/公开频道都能用，稳定性最高）
+# 1. 公开频道用户名：@xxx
+# 2. 频道完整ID：-100xxxxxxxxxx（所有频道通用，稳定性最高）
 channels = [
     {
         'source': '@wenan77',
@@ -42,27 +42,28 @@ def clean_text(text):
     text = re.sub(r'https?://[^\s\u4e00-\u9fa5，。！？；：""\'()（）]+|t\.me/[^\s\u4e00-\u9fa5，。！？；：""\'()（）]+', '', text)
     text = re.sub(r'@[a-zA-Z0-9_]{5,32}(?![a-zA-Z0-9_.])', '', text)
     return text.strip()
-# ========== 频道匹配工具函数（兼容用户名+ID） ==========
+# ========== 频道匹配工具函数（双匹配逻辑，不报错） ==========
 def get_target_channel(source_id, source_username):
-    """优先用用户名匹配，无用户名自动用ID匹配，兼容所有场景"""
-    # 先尝试用户名匹配
+    """优先用用户名匹配，匹配失败自动用ID匹配，兼容所有场景"""
+    # 第一步：尝试用户名匹配
     std_source_username = standardize_username(source_username)
     for channel in valid_channels:
         config_source = channel['source'].strip()
-        # 用户名匹配
+        # 非数字格式，按用户名匹配
         if not config_source.lstrip('-').isdigit():
             std_config_name = standardize_username(config_source)
             if std_source_username and std_config_name == std_source_username:
                 return channel['target']
-    # 用户名匹配失败，尝试ID匹配
+    # 第二步：用户名匹配失败，尝试ID匹配
     for channel in valid_channels:
         config_source = channel['source'].strip()
+        # 数字格式，按频道ID匹配
         if config_source.lstrip('-').isdigit():
             if int(config_source) == source_id:
                 return channel['target']
     # 都匹配失败返回None
     return None
-# ========== 频道检查函数（放宽校验，不强制要求用户名） ==========
+# ========== 频道检查函数（彻底放宽校验，不强制用户名） ==========
 async def check_channels(client):
     print("=== 正在检查频道配置 ===")
     global valid_channels
@@ -75,15 +76,15 @@ async def check_channels(client):
         # 检查源频道
         try:
             source_chat = await client.get_entity(source)
+            # 校验是否为频道类型
             if not isinstance(source_chat, Channel):
                 print(f"⚠️  警告：配对{idx+1}的源 {source} 不是频道类型，已跳过")
                 all_valid = False
                 continue
-            # 仅提示，不跳过，兼容无用户名的私有频道
-            if not source_chat.username:
-                print(f"⚠️  提示：配对{idx+1}的源 {source} 无公开用户名，将自动使用ID匹配")
-            else:
-                print(f"✅ 源频道校验通过：{source} | 用户名：@{source_chat.username}")
+            # 打印频道真实官方信息，帮你定位问题
+            real_username = source_chat.username if source_chat.username else '无（未绑定到频道）'
+            print(f"ℹ️  频道真实官方信息 | 频道ID：{source_chat.id} | 绑定的公开用户名：@{real_username}")
+            print(f"✅ 源频道校验通过，已加入监听列表")
         except Exception as e:
             print(f"❌ 错误：配对{idx+1}的源频道 {source} 无法访问，已跳过 | 详情：{e}")
             all_valid = False
@@ -95,7 +96,7 @@ async def check_channels(client):
                 print(f"⚠️  警告：配对{idx+1}的目标 {target} 不是频道类型，已跳过")
                 all_valid = False
                 continue
-            print(f"✅ 目标频道校验通过：{target}")
+            print(f"✅ 目标频道校验通过")
         except Exception as e:
             print(f"❌ 错误：配对{idx+1}的目标频道 {target} 无法访问，已跳过 | 详情：{e}")
             all_valid = False
