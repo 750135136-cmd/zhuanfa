@@ -6,8 +6,10 @@ from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument, Channel
 # ========== 配置项 ==========
 api_id = 25559912
 api_hash = '22d3bb9665ad7e6a86e89c1445672e07'
-session_name = "session"  # 复用你的session.session文件
-# 监听-目标频道配对，仅支持用户名格式，支持带@/不带@、大小写任意
+session_name = "session"
+# 监听-目标频道配对，同时支持：
+# 1. 用户名格式：@xxx （公开频道用）
+# 2. 频道ID格式：-100xxxxxxxxxx （私有/公开频道都能用，稳定性最高）
 channels = [
     {
         'source': '@wenan77',
@@ -20,16 +22,16 @@ channels = [
 ]
 max_text_length = 150  # 最大允许的文本长度
 forward_interval = 0.8  # 转发间隔（秒），避免风控
-media_group_wait_time = 1.5  # 媒体组等待时间（网络波动可改2秒），确保所有媒体接收完成
-processed_msg_ids = set()  # 已转发消息ID缓存（仅用于消息去重，不涉及频道匹配）
+media_group_wait_time = 1.5  # 媒体组等待时间
+processed_msg_ids = set()  # 已转发消息ID缓存（仅用于去重）
 max_cache_size = 1000  # 缓存最大容量，避免内存溢出
-media_group_cache = {}  # 媒体组临时缓存，合并同组多图/多视频
-media_group_lock = asyncio.Lock()  # 异步锁，避免缓存并发冲突
-# ========== 全局有效频道列表（自动过滤无效频道，避免崩溃） ==========
+media_group_cache = {}  # 媒体组临时缓存
+media_group_lock = asyncio.Lock()  # 异步锁
+# ========== 全局有效频道列表 ==========
 valid_channels = []
-# ========== 用户名标准化函数（核心兼容处理） ==========
+# ========== 通用标准化函数 ==========
 def standardize_username(username):
-    """统一用户名格式：移除@、转小写，完美兼容带@/不带@、大小写不敏感"""
+    """统一用户名格式：移除@、转小写，兼容所有格式"""
     if not username:
         return None
     return username.lstrip('@').lower()
@@ -37,26 +39,30 @@ def standardize_username(username):
 def clean_text(text):
     if not text:
         return ""
-    # 移除http/https链接、t.me站内链接
     text = re.sub(r'https?://[^\s\u4e00-\u9fa5，。！？；：""\'()（）]+|t\.me/[^\s\u4e00-\u9fa5，。！？；：""\'()（）]+', '', text)
-    # 移除Telegram规范的@用户名
     text = re.sub(r'@[a-zA-Z0-9_]{5,32}(?![a-zA-Z0-9_.])', '', text)
     return text.strip()
-# ========== 频道匹配工具函数（仅用户名匹配，无任何ID逻辑） ==========
-def get_target_channel(source_username):
-    """仅通过标准化后的用户名匹配目标频道，完全不涉及频道ID"""
+# ========== 频道匹配工具函数（兼容用户名+ID） ==========
+def get_target_channel(source_id, source_username):
+    """优先用用户名匹配，无用户名自动用ID匹配，兼容所有场景"""
+    # 先尝试用户名匹配
     std_source_username = standardize_username(source_username)
-    # 无用户名的频道直接匹配失败
-    if not std_source_username:
-        return None
-    # 遍历有效配置，仅对比标准化用户名
     for channel in valid_channels:
-        config_source = channel['source']
-        std_config_name = standardize_username(config_source)
-        if std_config_name == std_source_username:
-            return channel['target']
+        config_source = channel['source'].strip()
+        # 用户名匹配
+        if not config_source.lstrip('-').isdigit():
+            std_config_name = standardize_username(config_source)
+            if std_source_username and std_config_name == std_source_username:
+                return channel['target']
+    # 用户名匹配失败，尝试ID匹配
+    for channel in valid_channels:
+        config_source = channel['source'].strip()
+        if config_source.lstrip('-').isdigit():
+            if int(config_source) == source_id:
+                return channel['target']
+    # 都匹配失败返回None
     return None
-# ========== 频道检查函数（仅用户名校验，无ID转换） ==========
+# ========== 频道检查函数（放宽校验，不强制要求用户名） ==========
 async def check_channels(client):
     print("=== 正在检查频道配置 ===")
     global valid_channels
@@ -66,38 +72,30 @@ async def check_channels(client):
         source = channel['source']
         target = channel['target']
         print(f"\n--- 检查配对{idx+1}：监听 {source} → 转发到 {target} ---")
-        # 检查源频道（仅用户名校验）
+        # 检查源频道
         try:
             source_chat = await client.get_entity(source)
-            # 校验是否为频道类型
             if not isinstance(source_chat, Channel):
                 print(f"⚠️  警告：配对{idx+1}的源 {source} 不是频道类型，已跳过")
                 all_valid = False
                 continue
-            # 校验是否有公开用户名（核心：无用户名无法匹配）
+            # 仅提示，不跳过，兼容无用户名的私有频道
             if not source_chat.username:
-                print(f"⚠️  警告：配对{idx+1}的源 {source} 无公开用户名，无法用用户名匹配，已跳过")
-                all_valid = False
-                continue
-            print(f"✅ 源频道校验通过：{source} | 频道用户名：@{source_chat.username}")
+                print(f"⚠️  提示：配对{idx+1}的源 {source} 无公开用户名，将自动使用ID匹配")
+            else:
+                print(f"✅ 源频道校验通过：{source} | 用户名：@{source_chat.username}")
         except Exception as e:
             print(f"❌ 错误：配对{idx+1}的源频道 {source} 无法访问，已跳过 | 详情：{e}")
             all_valid = False
             continue
-        # 检查目标频道（仅用户名校验）
+        # 检查目标频道
         try:
             target_chat = await client.get_entity(target)
-            # 校验是否为频道类型
             if not isinstance(target_chat, Channel):
                 print(f"⚠️  警告：配对{idx+1}的目标 {target} 不是频道类型，已跳过")
                 all_valid = False
                 continue
-            # 校验是否有公开用户名
-            if not target_chat.username:
-                print(f"⚠️  警告：配对{idx+1}的目标 {target} 无公开用户名，无法用用户名转发，已跳过")
-                all_valid = False
-                continue
-            print(f"✅ 目标频道校验通过：{target} | 频道用户名：@{target_chat.username}")
+            print(f"✅ 目标频道校验通过：{target}")
         except Exception as e:
             print(f"❌ 错误：配对{idx+1}的目标频道 {target} 无法访问，已跳过 | 详情：{e}")
             all_valid = False
@@ -123,13 +121,19 @@ async def main():
         me = await client.get_me()
         print(f"✅ 已成功登录账号：@{me.username} | 用户ID：{me.id}")
         
-        # 频道配置检查，无有效频道直接退出，避免程序崩溃
+        # 频道配置检查，无有效频道直接退出
         check_result = await check_channels(client)
         if not check_result:
             return
         
         # 检查重复配置
-        source_list = [standardize_username(c['source']) for c in valid_channels]
+        source_list = []
+        for c in valid_channels:
+            config_source = c['source'].strip()
+            if config_source.lstrip('-').isdigit():
+                source_list.append(config_source)
+            else:
+                source_list.append(standardize_username(config_source))
         if len(source_list) != len(set(source_list)):
             print("⚠️  警告：检测到重复的源频道配置，重复项仅第一个生效")
         
@@ -142,9 +146,7 @@ async def main():
         print("\n机器人已启动，正在监听消息...\n")
         # ========== 媒体组合并转发处理 ==========
         async def process_media_group(grouped_id):
-            """处理完整的媒体组，合并转发为同一条消息"""
             try:
-                # 等待所有媒体接收完成
                 await asyncio.sleep(media_group_wait_time)
                 
                 async with media_group_lock:
@@ -153,9 +155,10 @@ async def main():
                     group_data = media_group_cache.pop(grouped_id)
                 
                 msg_list = group_data['msg_list']
-                source_username = group_data['source_username']
+                source_chat = group_data['source_chat']
                 target_channel = group_data['target_channel']
                 source_name = group_data['source_name']
+                source_id = source_chat.id
                 # 1. 去重校验
                 first_msg = msg_list[0]
                 if first_msg.id in processed_msg_ids:
@@ -189,41 +192,38 @@ async def main():
                 print(f"✅ 媒体组转发成功 | 源：{source_name} → 目标：{target_channel} | 媒体数量：{len(valid_media)} | 文案预览：{cleaned_text[:30]}")
             except Exception as e:
                 print(f"❌ 媒体组处理失败 | 错误详情：{e}")
-        # ========== 注册消息监听器（仅监听有效用户名频道） ==========
+        # ========== 注册消息监听器 ==========
         @client.on(events.NewMessage(chats=[c['source'] for c in valid_channels]))
         async def handler(event):
             try:
                 msg = event.message
                 source_chat = event.chat
                 source_username = source_chat.username
-                source_name = f"@{source_username}" if source_username else f"无用户名频道"
+                source_id = source_chat.id
+                source_name = f"@{source_username}" if source_username else f"频道ID:{source_id}"
                 grouped_id = msg.grouped_id
-                # 【必看日志】收到消息就打印，确认监听器正常工作
+                # 收到消息日志
                 print(f"📥 收到新消息组ID：{grouped_id}")
-                # 仅用用户名匹配目标频道
-                target_channel = get_target_channel(source_username)
+                # 匹配目标频道
+                target_channel = get_target_channel(source_id, source_username)
                 if not target_channel:
                     print(f"⏭️  已拦截 | 源：{source_name} | 原因：未匹配到对应的目标频道")
                     return
-                # ========== 处理媒体组（多图/多视频消息） ==========
+                # 处理媒体组
                 if grouped_id:
                     async with media_group_lock:
-                        # 该媒体组首次收到，初始化缓存
                         if grouped_id not in media_group_cache:
                             media_group_cache[grouped_id] = {
                                 'msg_list': [],
-                                'source_username': source_username,
+                                'source_chat': source_chat,
                                 'target_channel': target_channel,
                                 'source_name': source_name
                             }
-                            # 启动等待任务
                             asyncio.create_task(process_media_group(grouped_id))
-                        # 将当前媒体加入对应媒体组缓存
                         media_group_cache[grouped_id]['msg_list'].append(msg)
                     print(f"📦 已加入媒体组缓存 | 组ID：{grouped_id} | 当前组内媒体数：{len(media_group_cache[grouped_id]['msg_list'])}")
                     return
-                # ========== 处理单媒体消息（单个图片/视频） ==========
-                # 消息去重
+                # 单消息去重
                 if msg.id in processed_msg_ids:
                     print(f"⏭️  已跳过 | 源：{source_name} | 原因：重复消息")
                     return
@@ -231,17 +231,17 @@ async def main():
                 if len(processed_msg_ids) > max_cache_size:
                     processed_msg_ids.pop()
                 
-                # 核心规则1：纯文字消息直接拦截
+                # 纯文字消息拦截
                 if not msg.media:
                     print(f"⏭️  已拦截 | 源：{source_name} | 原因：纯文字消息，无图片/视频媒体")
                     return
                 
-                # 核心规则2：仅允许图片、视频类媒体
+                # 非图片/视频媒体拦截
                 if not isinstance(msg.media, (MessageMediaPhoto, MessageMediaDocument)):
                     print(f"⏭️  已拦截 | 源：{source_name} | 原因：非图片/视频类媒体")
                     return
                 
-                # 文本清洗与长度校验
+                # 文本长度校验
                 raw_text = msg.text or ""
                 cleaned_text = clean_text(raw_text)
                 if len(cleaned_text) > max_text_length:
