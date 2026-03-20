@@ -19,7 +19,7 @@ channels = [
         'target': '@hwsuc',
     }
 ]
-max_text_length = 50  # 最大允许的文本长度
+max_text_length = 150  # 最大允许的文本长度
 forward_interval = 0.8  # 转发间隔（秒），避免风控
 media_group_wait_time = 1.5  # 媒体组等待时间（网络波动可改2秒），确保所有媒体接收完成
 processed_msg_ids = set()  # 已转发消息ID缓存
