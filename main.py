@@ -2,12 +2,12 @@ import os
 import re
 import asyncio
 from telethon import TelegramClient, events
-from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument, PeerChannel, Channel
+from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument, Channel
 
 # ========== 配置项 ==========
 api_id = 25559912
 api_hash = '22d3bb9665ad7e6a86e89c1445672e07'
-session_name = "session"  # 直接复用你的session.session文件
+session_name = "session"  # 复用你的session.session文件
 # 监听-目标频道配对
 channels = [
     {
@@ -24,13 +24,13 @@ forward_interval = 0.8  # 转发间隔（秒），避免风控
 processed_msg_ids = set()  # 已转发消息ID缓存
 max_cache_size = 1000  # 缓存最大容量，避免内存溢出
 
-# ========== 文本清洗函数（修复正则语法警告） ==========
+# ========== 文本清洗函数 ==========
 def clean_text(text):
     if not text:
         return ""
-    # 移除http/https链接、t.me站内链接，不误杀正常中文内容
+    # 移除http/https链接、t.me站内链接
     text = re.sub(r'https?://[^\s\u4e00-\u9fa5，。！？；：""\'()（）]+|t\.me/[^\s\u4e00-\u9fa5，。！？；：""\'()（）]+', '', text)
-    # 移除Telegram规范的@用户名，不误杀邮箱地址
+    # 移除Telegram规范的@用户名
     text = re.sub(r'@[a-zA-Z0-9_]{5,32}(?![a-zA-Z0-9_.])', '', text)
     return text.strip()
 
@@ -50,7 +50,7 @@ def get_target_channel(source_id, source_username):
                 return channel['target']
     return None
 
-# ========== 启动前权限检查（修复频道类型判断bug） ==========
+# ========== 启动前权限检查（修复属性名错误） ==========
 async def check_channel_permissions(client):
     print("=== 正在检查频道权限 ===")
     for idx, channel in enumerate(channels):
@@ -64,12 +64,13 @@ async def check_channel_permissions(client):
         except Exception as e:
             print(f"❌ 错误：配对{idx+1}的源频道 {source} 无法访问，请确认已加入该频道 | 详情：{e}")
             return False
-        # 检查目标频道是否有发言/发媒体权限
+        # 检查目标频道是否有发言/发媒体权限（修复属性名）
         try:
             target_chat = await client.get_entity(target)
             me = await client.get_me()
             permissions = await client.get_permissions(target_chat, me)
-            if not permissions.send_messages or not permissions.send_media:
+            # 修复：使用正确的Telethon权限属性名
+            if not permissions.can_send_messages or not permissions.can_send_media:
                 print(f"❌ 错误：配对{idx+1}的目标频道 {target} 没有发言/发媒体权限，请确认权限配置")
                 return False
         except Exception as e:
@@ -81,7 +82,7 @@ async def check_channel_permissions(client):
 # ========== 核心消息处理逻辑 ==========
 async def main():
     async with TelegramClient(session_name, api_id, api_hash) as client:
-        # 打印登录状态，方便排查session问题
+        # 打印登录状态
         me = await client.get_me()
         print(f"✅ 已成功登录账号：@{me.username} | 用户ID：{me.id}")
         
@@ -95,7 +96,7 @@ async def main():
         if len(source_list) != len(set(source_list)):
             print("⚠️  警告：检测到重复的源频道配置，重复项仅第一个生效")
         
-        # 打印转发规则，方便核对
+        # 打印转发规则
         print("\n=== 转发规则已生效 ===")
         print(f"✅ 允许转发：文本≤{max_text_length}字 + 带有图片/视频/媒体的消息")
         print(f"❌ 禁止转发：纯文字消息、文本超{max_text_length}字的消息（无论是否带媒体）")
@@ -110,7 +111,7 @@ async def main():
             source_chat = event.chat
             source_name = f"@{source_chat.username}" if source_chat.username else f"频道ID:{source_chat.id}"
             
-            # 消息去重，防止重复转发
+            # 消息去重
             if msg.id in processed_msg_ids:
                 return
             processed_msg_ids.add(msg.id)
@@ -130,7 +131,7 @@ async def main():
             # 文本清洗与长度校验
             raw_text = msg.text or ""
             cleaned_text = clean_text(raw_text)
-            # 核心规则3：文本超过长度限制直接拦截整条消息
+            # 核心规则3：文本超过长度限制直接拦截
             if len(cleaned_text) > max_text_length:
                 print(f"⏭️  已拦截 | 源：{source_name} | 原因：文本长度{len(cleaned_text)}，超过{max_text_length}字限制")
                 return
@@ -148,7 +149,7 @@ async def main():
                     target_channel,
                     message=cleaned_text,
                     file=msg.media,
-                    silent=True  # 静默发送，避免触发大量通知
+                    silent=True
                 )
                 print(f"✅ 转发成功 | 源：{source_name} → 目标：{target_channel} | 文案预览：{cleaned_text[:30]}")
             except Exception as e:
@@ -157,7 +158,7 @@ async def main():
         # 保持客户端运行
         await client.run_until_disconnected()
 
-# 程序入口，全局异常处理
+# 程序入口
 if __name__ == "__main__":
     try:
         asyncio.run(main())
