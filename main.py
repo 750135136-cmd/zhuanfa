@@ -7,7 +7,7 @@ from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument, Channel
 api_id = 25559912
 api_hash = '22d3bb9665ad7e6a86e89c1445672e07'
 session_name = "session"  # 复用你的session.session文件
-# 监听-目标频道配对，优先用频道ID，稳定性远高于用户名
+# 监听-目标频道配对，仅支持用户名格式，支持带@/不带@、大小写任意
 channels = [
     {
         'source': '@wenan77',
@@ -21,13 +21,15 @@ channels = [
 max_text_length = 150  # 最大允许的文本长度
 forward_interval = 0.8  # 转发间隔（秒），避免风控
 media_group_wait_time = 1.5  # 媒体组等待时间（网络波动可改2秒），确保所有媒体接收完成
-processed_msg_ids = set()  # 已转发消息ID缓存
+processed_msg_ids = set()  # 已转发消息ID缓存（仅用于消息去重，不涉及频道匹配）
 max_cache_size = 1000  # 缓存最大容量，避免内存溢出
 media_group_cache = {}  # 媒体组临时缓存，合并同组多图/多视频
 media_group_lock = asyncio.Lock()  # 异步锁，避免缓存并发冲突
-# ========== 通用标准化函数 ==========
+# ========== 全局有效频道列表（自动过滤无效频道，避免崩溃） ==========
+valid_channels = []
+# ========== 用户名标准化函数（核心兼容处理） ==========
 def standardize_username(username):
-    """统一用户名格式：移除@、转小写，兼容大小写/带@不带@"""
+    """统一用户名格式：移除@、转小写，完美兼容带@/不带@、大小写不敏感"""
     if not username:
         return None
     return username.lstrip('@').lower()
@@ -40,63 +42,80 @@ def clean_text(text):
     # 移除Telegram规范的@用户名
     text = re.sub(r'@[a-zA-Z0-9_]{5,32}(?![a-zA-Z0-9_.])', '', text)
     return text.strip()
-# ========== 频道匹配工具函数（优化版） ==========
-def get_target_channel(source_id, source_username):
-    """优先用ID匹配，再用标准化用户名匹配，兼容所有场景"""
+# ========== 频道匹配工具函数（仅用户名匹配，无任何ID逻辑） ==========
+def get_target_channel(source_username):
+    """仅通过标准化后的用户名匹配目标频道，完全不涉及频道ID"""
     std_source_username = standardize_username(source_username)
-    for channel in channels:
-        config_source = channel['source'].strip()
-        # 1. 优先匹配数字ID（私有频道/用户名修改也能匹配）
-        if config_source.isdigit():
-            if int(config_source) == source_id:
-                return channel['target']
-        # 2. 备用匹配标准化用户名（大小写完全不敏感）
-        else:
-            std_config_name = standardize_username(config_source)
-            if std_source_username and std_config_name == std_source_username:
-                return channel['target']
+    # 无用户名的频道直接匹配失败
+    if not std_source_username:
+        return None
+    # 遍历有效配置，仅对比标准化用户名
+    for channel in valid_channels:
+        config_source = channel['source']
+        std_config_name = standardize_username(config_source)
+        if std_config_name == std_source_username:
+            return channel['target']
     return None
-# ========== 频道检查函数（优化版，兼容大小写） ==========
+# ========== 频道检查函数（仅用户名校验，无ID转换） ==========
 async def check_channels(client):
     print("=== 正在检查频道配置 ===")
+    global valid_channels
+    valid_list = []
     all_valid = True
-    # 预存标准化后的源，检查重复配置
-    std_source_list = []
     for idx, channel in enumerate(channels):
         source = channel['source']
         target = channel['target']
-        # 标准化源，检查重复
-        std_source = standardize_username(source) if not source.isdigit() else source
-        if std_source in std_source_list:
-            print(f"⚠️  警告：配对{idx+1}的源 {source} 是重复配置，重复项仅第一个生效")
-        std_source_list.append(std_source)
-        # 检查源频道是否可访问
+        print(f"\n--- 检查配对{idx+1}：监听 {source} → 转发到 {target} ---")
+        # 检查源频道（仅用户名校验）
         try:
             source_chat = await client.get_entity(source)
+            # 校验是否为频道类型
             if not isinstance(source_chat, Channel):
-                print(f"⚠️  警告：配对{idx+1}的源 {source} 不是频道类型，请检查配置")
-            # 自动更新配置里的源为ID，提升后续匹配稳定性
-            if not source.isdigit():
-                channel['source'] = str(source_chat.id)
-                print(f"ℹ️  已自动将配对{idx+1}的源更新为频道ID: {source_chat.id}，稳定性提升")
+                print(f"⚠️  警告：配对{idx+1}的源 {source} 不是频道类型，已跳过")
+                all_valid = False
+                continue
+            # 校验是否有公开用户名（核心：无用户名无法匹配）
+            if not source_chat.username:
+                print(f"⚠️  警告：配对{idx+1}的源 {source} 无公开用户名，无法用用户名匹配，已跳过")
+                all_valid = False
+                continue
+            print(f"✅ 源频道校验通过：{source} | 频道用户名：@{source_chat.username}")
         except Exception as e:
-            print(f"❌ 错误：配对{idx+1}的源频道 {source} 无法访问，请确认账号已加入该频道 | 详情：{e}")
+            print(f"❌ 错误：配对{idx+1}的源频道 {source} 无法访问，已跳过 | 详情：{e}")
             all_valid = False
-        # 检查目标频道是否可访问（兼容大小写）
+            continue
+        # 检查目标频道（仅用户名校验）
         try:
-            # 标准化目标频道，确保大小写不影响访问
-            std_target = standardize_username(target)
-            target_chat = await client.get_entity(std_target if std_target else target)
+            target_chat = await client.get_entity(target)
+            # 校验是否为频道类型
             if not isinstance(target_chat, Channel):
-                print(f"⚠️  警告：配对{idx+1}的目标 {target} 不是频道类型，请检查配置")
+                print(f"⚠️  警告：配对{idx+1}的目标 {target} 不是频道类型，已跳过")
+                all_valid = False
+                continue
+            # 校验是否有公开用户名
+            if not target_chat.username:
+                print(f"⚠️  警告：配对{idx+1}的目标 {target} 无公开用户名，无法用用户名转发，已跳过")
+                all_valid = False
+                continue
+            print(f"✅ 目标频道校验通过：{target} | 频道用户名：@{target_chat.username}")
         except Exception as e:
-            print(f"❌ 错误：配对{idx+1}的目标频道 {target} 无法访问，请确认账号已加入该频道并拥有发送权限 | 详情：{e}")
+            print(f"❌ 错误：配对{idx+1}的目标频道 {target} 无法访问，已跳过 | 详情：{e}")
             all_valid = False
+            continue
+        # 校验通过，加入有效列表
+        valid_list.append(channel)
+    # 更新全局有效频道列表
+    valid_channels = valid_list
+    # 结果输出
+    if len(valid_channels) > 0:
+        print(f"\n✅ 共 {len(valid_channels)} 组频道配置校验通过，将正常启动监听")
+    else:
+        print("\n❌ 没有可用的频道配置，程序无法启动")
     if all_valid:
         print("✅ 所有频道配置检查通过！")
     else:
-        print("⚠️  部分频道配置异常，程序仍会启动，异常配对将无法正常转发")
-    return all_valid
+        print("⚠️  部分频道配置异常，已自动跳过，有效配对将正常工作")
+    return len(valid_channels) > 0
 # ========== 核心消息处理逻辑 ==========
 async def main():
     async with TelegramClient(session_name, api_id, api_hash) as client:
@@ -104,14 +123,21 @@ async def main():
         me = await client.get_me()
         print(f"✅ 已成功登录账号：@{me.username} | 用户ID：{me.id}")
         
-        # 频道配置检查（自动优化配置为ID）
-        await check_channels(client)
+        # 频道配置检查，无有效频道直接退出，避免程序崩溃
+        check_result = await check_channels(client)
+        if not check_result:
+            return
+        
+        # 检查重复配置
+        source_list = [standardize_username(c['source']) for c in valid_channels]
+        if len(source_list) != len(set(source_list)):
+            print("⚠️  警告：检测到重复的源频道配置，重复项仅第一个生效")
         
         # 打印转发规则
         print("\n=== 转发规则已生效 ===")
         print(f"✅ 允许转发：文本≤{max_text_length}字 + 带有图片/视频/媒体的消息（含多图/多视频媒体组）")
         print(f"❌ 禁止转发：纯文字消息、文本超{max_text_length}字的消息（无论是否带媒体）")
-        for idx, channel in enumerate(channels):
+        for idx, channel in enumerate(valid_channels):
             print(f"配对{idx+1}：监听 {channel['source']} → 转发到 {channel['target']}")
         print("\n机器人已启动，正在监听消息...\n")
         # ========== 媒体组合并转发处理 ==========
@@ -127,7 +153,7 @@ async def main():
                     group_data = media_group_cache.pop(grouped_id)
                 
                 msg_list = group_data['msg_list']
-                source_chat = group_data['source_chat']
+                source_username = group_data['source_username']
                 target_channel = group_data['target_channel']
                 source_name = group_data['source_name']
                 # 1. 去重校验
@@ -163,18 +189,19 @@ async def main():
                 print(f"✅ 媒体组转发成功 | 源：{source_name} → 目标：{target_channel} | 媒体数量：{len(valid_media)} | 文案预览：{cleaned_text[:30]}")
             except Exception as e:
                 print(f"❌ 媒体组处理失败 | 错误详情：{e}")
-        # ========== 注册消息监听器（优化版，用ID监听） ==========
-        @client.on(events.NewMessage(chats=[c['source'] for c in channels]))
+        # ========== 注册消息监听器（仅监听有效用户名频道） ==========
+        @client.on(events.NewMessage(chats=[c['source'] for c in valid_channels]))
         async def handler(event):
             try:
                 msg = event.message
                 source_chat = event.chat
-                source_name = f"@{source_chat.username}" if source_chat.username else f"频道ID:{source_chat.id}"
+                source_username = source_chat.username
+                source_name = f"@{source_username}" if source_username else f"无用户名频道"
                 grouped_id = msg.grouped_id
                 # 【必看日志】收到消息就打印，确认监听器正常工作
                 print(f"📥 收到新消息组ID：{grouped_id}")
-                # 匹配目标频道
-                target_channel = get_target_channel(source_chat.id, source_chat.username)
+                # 仅用用户名匹配目标频道
+                target_channel = get_target_channel(source_username)
                 if not target_channel:
                     print(f"⏭️  已拦截 | 源：{source_name} | 原因：未匹配到对应的目标频道")
                     return
@@ -185,7 +212,7 @@ async def main():
                         if grouped_id not in media_group_cache:
                             media_group_cache[grouped_id] = {
                                 'msg_list': [],
-                                'source_chat': source_chat,
+                                'source_username': source_username,
                                 'target_channel': target_channel,
                                 'source_name': source_name
                             }
