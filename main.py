@@ -9,11 +9,11 @@ api_hash = '22d3bb9665ad7e6a86e89c1445672e07'  # 替换成你的 API_HASH
 # 设置监听和目标频道
 channels = [
     {
-        'source': '@ZGRLT8',  # 第一个监听频道
+        'source': '@zhrlt8',  # 第一个监听频道
         'target': '@wnffx',  # 第一个目标频道
     },
     {
-        'source': '@ZGRLT9',  # 第二个监听频道
+        'source': '@zgrlt9',  # 第二个监听频道
         'target': '@hwsuc',  # 第二个目标频道
     }
 ]
@@ -53,22 +53,19 @@ async def handler(event):
     # 清理消息文本（去掉链接和@提及）
     text = clean_text(text)
 
-    # 如果纯文本消息不带媒体，跳过不转发
-    if len(text) > max_length and not msg.media:
+    # 如果文本超过最大字符数，跳过
+    if len(text) > max_length:
         return
 
     try:
-        # 如果是文本消息和媒体（图片/视频），一起转发
-        if msg.text and msg.media:
-            await client.send_message(target_channel, text)  # 先转发文本
-            await client.send_file(target_channel, msg.media, caption=text)  # 然后转发媒体
-            print(f"从 {source_channel} 转发到 {target_channel} 成功: {text[:30]} 和媒体消息")
-
-        # 如果只有媒体消息（纯视频/图片）
+        # 如果是文本消息
+        if msg.text:
+            await client.send_message(target_channel, text)
+            print(f"转发文本: {text[:30]} 到 {target_channel}")  # 输出前30个字符
+        # 如果是媒体消息（图片/视频），确保媒体和文本一起转发
         elif msg.media:
             await client.send_file(target_channel, msg.media, caption=text)
-            print(f"转发媒体消息到 {target_channel}，不带文本")
-
+            print(f"转发媒体消息到 {target_channel}")  # 输出转发的媒体消息
     except Exception as e:
         print("错误:", e)
 
