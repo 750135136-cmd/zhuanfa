@@ -13,7 +13,7 @@ channels = [
         'target': '@wnffx',  # 第一个目标频道
     },
     {
-        'source': '@sucai75',  # 第二个监听频道
+        'source': '@ZGRLT9',  # 第二个监听频道
         'target': '@hwsuc',  # 第二个目标频道
     }
 ]
