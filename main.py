@@ -2,9 +2,9 @@ import os
 from telethon import TelegramClient, events
 import re
 
-# 从环境变量读取 API ID 和 Hash
-api_id = int(os.getenv("API_ID"))
-api_hash = os.getenv("API_HASH")
+# 直接在代码中填写 API_ID 和 API_HASH
+api_id = 25559912  # 替换成你的 API_ID
+api_hash = '22d3bb9665ad7e6a86e89c1445672e07'  # 替换成你的 API_HASH
 
 # 设置监听和目标频道
 channels = [
