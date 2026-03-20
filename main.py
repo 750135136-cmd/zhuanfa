@@ -7,17 +7,11 @@ from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument, Channel
 api_id = 25559912
 api_hash = '22d3bb9665ad7e6a86e89c1445672e07'
 session_name = "session"
-# 监听-目标频道配对，同时支持：
-# 1. 公开频道用户名：@xxx
-# 2. 频道完整ID：-100xxxxxxxxxx（所有频道通用，稳定性最高）
+# 仅保留第一组监听-目标频道配对（已删除第二个）
 channels = [
     {
         'source': '@wenan77',
         'target': '@wnffx',
-    },
-    {
-        'source': '@sucai75',
-        'target': '@hwsuc',
     }
 ]
 max_text_length = 150  # 最大允许的文本长度
@@ -31,7 +25,7 @@ media_group_lock = asyncio.Lock()  # 异步锁
 valid_channels = []
 # ========== 通用标准化函数 ==========
 def standardize_username(username):
-    """统一用户名格式：移除@、转小写，兼容所有格式"""
+    """统一用户名格式：移除@、转小写，兼容典藏用户名/大小写/带@不带@"""
     if not username:
         return None
     return username.lstrip('@').lower()
@@ -39,13 +33,15 @@ def standardize_username(username):
 def clean_text(text):
     if not text:
         return ""
+    # 移除http/https链接、t.me站内链接
     text = re.sub(r'https?://[^\s\u4e00-\u9fa5，。！？；：""\'()（）]+|t\.me/[^\s\u4e00-\u9fa5，。！？；：""\'()（）]+', '', text)
+    # 移除Telegram规范的@用户名
     text = re.sub(r'@[a-zA-Z0-9_]{5,32}(?![a-zA-Z0-9_.])', '', text)
     return text.strip()
-# ========== 频道匹配工具函数（双匹配逻辑，不报错） ==========
+# ========== 频道匹配工具函数（双匹配逻辑，兜底不报错） ==========
 def get_target_channel(source_id, source_username):
-    """优先用用户名匹配，匹配失败自动用ID匹配，兼容所有场景"""
-    # 第一步：尝试用户名匹配
+    """优先用用户名匹配（兼容典藏），匹配失败自动用ID匹配，彻底避免找不到目标"""
+    # 第一步：尝试用户名匹配（标准化后，兼容所有格式）
     std_source_username = standardize_username(source_username)
     for channel in valid_channels:
         config_source = channel['source'].strip()
@@ -54,7 +50,7 @@ def get_target_channel(source_id, source_username):
             std_config_name = standardize_username(config_source)
             if std_source_username and std_config_name == std_source_username:
                 return channel['target']
-    # 第二步：用户名匹配失败，尝试ID匹配
+    # 第二步：用户名匹配失败，自动用ID匹配兜底
     for channel in valid_channels:
         config_source = channel['source'].strip()
         # 数字格式，按频道ID匹配
@@ -63,7 +59,7 @@ def get_target_channel(source_id, source_username):
                 return channel['target']
     # 都匹配失败返回None
     return None
-# ========== 频道检查函数（彻底放宽校验，不强制用户名） ==========
+# ========== 频道检查函数（放宽校验，打印真实信息，定位典藏用户名问题） ==========
 async def check_channels(client):
     print("=== 正在检查频道配置 ===")
     global valid_channels
@@ -76,14 +72,14 @@ async def check_channels(client):
         # 检查源频道
         try:
             source_chat = await client.get_entity(source)
-            # 校验是否为频道类型
+            # 仅校验是否为频道类型，不强制要求用户名
             if not isinstance(source_chat, Channel):
                 print(f"⚠️  警告：配对{idx+1}的源 {source} 不是频道类型，已跳过")
                 all_valid = False
                 continue
-            # 打印频道真实官方信息，帮你定位问题
-            real_username = source_chat.username if source_chat.username else '无（未绑定到频道）'
-            print(f"ℹ️  频道真实官方信息 | 频道ID：{source_chat.id} | 绑定的公开用户名：@{real_username}")
+            # 打印频道真实官方信息，快速定位典藏用户名是否绑定成功
+            real_username = source_chat.username if source_chat.username else '无（典藏用户名未绑定到频道）'
+            print(f"ℹ️  频道真实信息 | 频道ID：{source_chat.id} | 绑定的公开用户名：@{real_username}")
             print(f"✅ 源频道校验通过，已加入监听列表")
         except Exception as e:
             print(f"❌ 错误：配对{idx+1}的源频道 {source} 无法访问，已跳过 | 详情：{e}")
@@ -127,7 +123,7 @@ async def main():
         if not check_result:
             return
         
-        # 检查重复配置
+        # 检查重复配置（单组无需担心，保留逻辑防后续新增）
         source_list = []
         for c in valid_channels:
             config_source = c['source'].strip()
@@ -201,16 +197,17 @@ async def main():
                 source_chat = event.chat
                 source_username = source_chat.username
                 source_id = source_chat.id
+                # 显示用户名/ID，方便日志查看
                 source_name = f"@{source_username}" if source_username else f"频道ID:{source_id}"
                 grouped_id = msg.grouped_id
-                # 收到消息日志
+                # 收到消息日志，确认监听器正常工作
                 print(f"📥 收到新消息组ID：{grouped_id}")
-                # 匹配目标频道
+                # 匹配目标频道（双匹配逻辑，兜底不报错）
                 target_channel = get_target_channel(source_id, source_username)
                 if not target_channel:
                     print(f"⏭️  已拦截 | 源：{source_name} | 原因：未匹配到对应的目标频道")
                     return
-                # 处理媒体组
+                # ========== 处理媒体组（多图/多视频消息） ==========
                 if grouped_id:
                     async with media_group_lock:
                         if grouped_id not in media_group_cache:
@@ -220,11 +217,14 @@ async def main():
                                 'target_channel': target_channel,
                                 'source_name': source_name
                             }
+                            # 启动等待任务，合并媒体组
                             asyncio.create_task(process_media_group(grouped_id))
+                        # 将当前媒体加入对应媒体组缓存
                         media_group_cache[grouped_id]['msg_list'].append(msg)
                     print(f"📦 已加入媒体组缓存 | 组ID：{grouped_id} | 当前组内媒体数：{len(media_group_cache[grouped_id]['msg_list'])}")
                     return
-                # 单消息去重
+                # ========== 处理单媒体消息（单个图片/视频） ==========
+                # 消息去重
                 if msg.id in processed_msg_ids:
                     print(f"⏭️  已跳过 | 源：{source_name} | 原因：重复消息")
                     return
@@ -232,17 +232,17 @@ async def main():
                 if len(processed_msg_ids) > max_cache_size:
                     processed_msg_ids.pop()
                 
-                # 纯文字消息拦截
+                # 核心规则1：纯文字消息直接拦截
                 if not msg.media:
                     print(f"⏭️  已拦截 | 源：{source_name} | 原因：纯文字消息，无图片/视频媒体")
                     return
                 
-                # 非图片/视频媒体拦截
+                # 核心规则2：仅允许图片、视频类媒体
                 if not isinstance(msg.media, (MessageMediaPhoto, MessageMediaDocument)):
                     print(f"⏭️  已拦截 | 源：{source_name} | 原因：非图片/视频类媒体")
                     return
                 
-                # 文本长度校验
+                # 文本清洗与长度校验
                 raw_text = msg.text or ""
                 cleaned_text = clean_text(raw_text)
                 if len(cleaned_text) > max_text_length:
