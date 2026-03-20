@@ -8,7 +8,7 @@ from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument, Channel
 api_id = 25559912
 api_hash = '22d3bb9665ad7e6a86e89c1445672e07'
 session_name = "session"  # 复用你的session.session文件
-# 监听-目标频道配对
+# 监听-目标频道配对，严格核对用户名，不要拼写错误
 channels = [
     {
         'source': '@zgrlt8',
@@ -50,9 +50,10 @@ def get_target_channel(source_id, source_username):
                 return channel['target']
     return None
 
-# ========== 启动前权限检查（修复属性名错误） ==========
-async def check_channel_permissions(client):
-    print("=== 正在检查频道权限 ===")
+# ========== 简化版频道检查（彻底解决版本兼容报错，不强制退出） ==========
+async def check_channels(client):
+    print("=== 正在检查频道配置 ===")
+    all_valid = True
     for idx, channel in enumerate(channels):
         source = channel['source']
         target = channel['target']
@@ -62,41 +63,36 @@ async def check_channel_permissions(client):
             if not isinstance(source_chat, Channel):
                 print(f"⚠️  警告：配对{idx+1}的源 {source} 不是频道类型，请检查配置")
         except Exception as e:
-            print(f"❌ 错误：配对{idx+1}的源频道 {source} 无法访问，请确认已加入该频道 | 详情：{e}")
-            return False
-        # 检查目标频道是否有发言/发媒体权限（修复属性名）
+            print(f"❌ 错误：配对{idx+1}的源频道 {source} 无法访问，请确认账号已加入该频道 | 详情：{e}")
+            all_valid = False
+        # 检查目标频道是否可访问
         try:
-            target_chat = await client.get_entity(target)
-            me = await client.get_me()
-            permissions = await client.get_permissions(target_chat, me)
-            # 修复：使用正确的Telethon权限属性名
-            if not permissions.can_send_messages or not permissions.can_send_media:
-                print(f"❌ 错误：配对{idx+1}的目标频道 {target} 没有发言/发媒体权限，请确认权限配置")
-                return False
+            await client.get_entity(target)
         except Exception as e:
-            print(f"❌ 错误：配对{idx+1}的目标频道 {target} 无法访问，请确认已加入该频道 | 详情：{e}")
-            return False
-    print("✅ 所有频道权限检查通过！")
-    return True
+            print(f"❌ 错误：配对{idx+1}的目标频道 {target} 无法访问，请确认账号已加入该频道 | 详情：{e}")
+            all_valid = False
+    if all_valid:
+        print("✅ 所有频道配置检查通过！")
+    else:
+        print("⚠️  部分频道配置异常，程序仍会启动，异常配对将无法正常转发")
+    return all_valid
 
 # ========== 核心消息处理逻辑 ==========
 async def main():
     async with TelegramClient(session_name, api_id, api_hash) as client:
-        # 打印登录状态
+        # 打印登录状态，确认账号登录成功
         me = await client.get_me()
         print(f"✅ 已成功登录账号：@{me.username} | 用户ID：{me.id}")
         
-        # 启动前权限检查
-        if not await check_channel_permissions(client):
-            print("❌ 权限检查失败，程序退出")
-            return
+        # 频道配置检查
+        await check_channels(client)
         
         # 检查重复配置
         source_list = [c['source'].lstrip('@').lower() for c in channels]
         if len(source_list) != len(set(source_list)):
             print("⚠️  警告：检测到重复的源频道配置，重复项仅第一个生效")
         
-        # 打印转发规则
+        # 打印转发规则，方便核对
         print("\n=== 转发规则已生效 ===")
         print(f"✅ 允许转发：文本≤{max_text_length}字 + 带有图片/视频/媒体的消息")
         print(f"❌ 禁止转发：纯文字消息、文本超{max_text_length}字的消息（无论是否带媒体）")
@@ -111,8 +107,12 @@ async def main():
             source_chat = event.chat
             source_name = f"@{source_chat.username}" if source_chat.username else f"频道ID:{source_chat.id}"
             
-            # 消息去重
+            # 打印收到的消息，确认监听到了消息
+            print(f"📥 收到新消息 | 源：{source_name} | 消息ID：{msg.id} | 带媒体：{bool(msg.media)}")
+            
+            # 消息去重，防止重复转发
             if msg.id in processed_msg_ids:
+                print(f"⏭️  已跳过 | 源：{source_name} | 原因：重复消息")
                 return
             processed_msg_ids.add(msg.id)
             if len(processed_msg_ids) > max_cache_size:
@@ -131,7 +131,7 @@ async def main():
             # 文本清洗与长度校验
             raw_text = msg.text or ""
             cleaned_text = clean_text(raw_text)
-            # 核心规则3：文本超过长度限制直接拦截
+            # 核心规则3：文本超过长度限制直接拦截整条消息
             if len(cleaned_text) > max_text_length:
                 print(f"⏭️  已拦截 | 源：{source_name} | 原因：文本长度{len(cleaned_text)}，超过{max_text_length}字限制")
                 return
@@ -153,7 +153,7 @@ async def main():
                 )
                 print(f"✅ 转发成功 | 源：{source_name} → 目标：{target_channel} | 文案预览：{cleaned_text[:30]}")
             except Exception as e:
-                print(f"❌ 转发失败 | 源：{source_name} | 错误详情：{e}")
+                print(f"❌ 转发失败 | 源：{source_name} | 目标：{target_channel} | 错误详情：{e}")
         
         # 保持客户端运行
         await client.run_until_disconnected()
