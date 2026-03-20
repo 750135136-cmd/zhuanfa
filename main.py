@@ -11,11 +11,11 @@ session_name = "session"  # 复用你的session.session文件
 # 监听-目标频道配对，严格核对用户名
 channels = [
     {
-        'source': '@zgrlt8',
+        'source': '@wenan77',
         'target': '@wnffx',
     },
     {
-        'source': '@zgrlt9',
+        'source': '@sucai75',
         'target': '@hwsuc',
     }
 ]
