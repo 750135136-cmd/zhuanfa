@@ -12,10 +12,6 @@ channels = [
     {
         'source': '@wenan77',
         'target': '@wnffx',
-    },
-    {
-        'source': '@xdgd19',
-        'target': '@hrgxx',
     }
 ]
 max_text_length = 50  # 最大允许的文本长度
