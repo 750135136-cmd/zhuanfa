@@ -8,7 +8,7 @@ from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument, Channel
 api_id = 25559912
 api_hash = '22d3bb9665ad7e6a86e89c1445672e07'
 session_name = "session"
-# 频道配对配置，支持填典藏用户名@xxx、公开用户名、数字频道ID
+# 频道配对配置
 channels = [
     {
         'source': '@wenan77',
@@ -19,41 +19,36 @@ channels = [
         'target': '@hrgxx',
     }
 ]
-max_text_length = 50  # 最大允许的文本长度
-forward_interval = 3  # 转发间隔（秒），建议≥2秒，避免风控，新号建议5秒+
-media_group_wait_time = 2  # 媒体组等待时间，避免媒体接收不全
-max_cache_size = 1000  # 缓存最大容量，避免内存溢出
-# ========== 全局缓存优化 ==========
-processed_msg_ids = deque(maxlen=max_cache_size)  # 改用deque，自动FIFO淘汰旧数据
-media_group_cache = {}  # 媒体组临时缓存
-media_group_lock = asyncio.Lock()  # 异步锁
-# ========== 全局有效频道列表（已缓存真实ID） ==========
+max_text_length = 100  # 放宽到100字，避免正常文案被拦截
+forward_interval = 3  # 转发间隔≥3秒，避免风控和API限流
+media_group_wait_time = 4  # 媒体组等待时间延长到4秒，确保收全所有媒体
+max_cache_size = 1000
+# ========== 全局缓存 ==========
+processed_msg_ids = deque(maxlen=max_cache_size)
+media_group_cache = {}
+media_group_lock = asyncio.Lock()
 valid_channels = []
-# ========== 通用标准化函数 ==========
+# ========== 通用函数 ==========
 def standardize_username(username):
-    """统一用户名格式：移除@、转小写，兼容大小写/带@不带@"""
     if not username:
         return None
     return username.lstrip('@').lower()
-# ========== 文本清洗函数（优化正则，避免异常字符） ==========
+
 def clean_text(text):
     if not text:
         return ""
-    # 移除http/https链接、t.me站内链接
+    # 移除链接和@用户名，保留正常文案
     text = re.sub(r'https?://\S+|t\.me/\S+', '', text)
-    # 移除Telegram规范的@用户名
     text = re.sub(r'@[a-zA-Z0-9_]{5,32}', '', text)
-    # 移除多余换行和空格
     text = re.sub(r'\n+', '\n', text).strip()
     return text
-# ========== 频道匹配函数 ==========
+
 def get_target_channel(source_id):
-    """直接用频道真实唯一ID匹配，彻底解决典藏频道匹配问题"""
     for channel in valid_channels:
         if channel['source_id'] == source_id:
             return channel['target']
     return None
-# ========== 频道检查与ID缓存 ==========
+# ========== 频道检查 ==========
 async def check_channels(client):
     print("=== 正在检查频道配置 ===")
     global valid_channels
@@ -70,11 +65,11 @@ async def check_channels(client):
                 print(f"⚠️  警告：配对{idx+1}的源 {source_config} 不是频道类型，已跳过")
                 all_valid = False
                 continue
-            real_username = source_chat.username if source_chat.username else '无（典藏用户名/无公开用户名）'
-            print(f"ℹ️  频道真实信息 | 频道ID：{source_chat.id} | 绑定的公开用户名：@{real_username}")
-            print(f"✅ 源频道校验通过，已加入监听列表")
+            real_username = source_chat.username if source_chat.username else '无（典藏频道）'
+            print(f"ℹ️  频道真实ID：{source_chat.id} | 公开用户名：@{real_username}")
+            print(f"✅ 源频道校验通过")
         except Exception as e:
-            print(f"❌ 错误：配对{idx+1}的源频道 {source_config} 无法访问，已跳过 | 详情：{e}")
+            print(f"❌ 源频道 {source_config} 访问失败 | 详情：{e}")
             all_valid = False
             continue
         # 检查目标频道
@@ -86,30 +81,23 @@ async def check_channels(client):
                 continue
             print(f"✅ 目标频道校验通过")
         except Exception as e:
-            print(f"❌ 错误：配对{idx+1}的目标频道 {target_config} 无法访问，已跳过 | 详情：{e}")
+            print(f"❌ 目标频道 {target_config} 访问失败 | 详情：{e}")
             all_valid = False
             continue
-        # 校验通过，存入带真实ID的有效配置
+        # 存入有效配置
         valid_list.append({
             'source_config': source_config,
             'target': target_config,
             'source_id': source_chat.id
         })
-    # 更新全局有效频道列表
     valid_channels = valid_list
-    # 结果输出
     if len(valid_channels) > 0:
-        print(f"\n✅ 共 {len(valid_channels)} 组频道配置校验通过，将正常启动监听")
+        print(f"\n✅ 共 {len(valid_channels)} 组频道配置生效")
     else:
-        print("\n❌ 没有可用的频道配置，程序无法启动")
-    if all_valid:
-        print("✅ 所有频道配置检查通过！")
-    else:
-        print("⚠️  部分频道配置异常，已自动跳过，有效配对将正常工作")
+        print("\n❌ 无可用频道配置，程序无法启动")
     return len(valid_channels) > 0
-# ========== 核心消息处理逻辑 ==========
+# ========== 核心逻辑 ==========
 async def main():
-    # 客户端增加重连、超时配置，避免网络波动导致会话异常
     client = TelegramClient(
         session_name, 
         api_id, 
@@ -120,30 +108,32 @@ async def main():
         timeout=30
     )
     async with client:
-        # 打印登录状态
+        # 登录信息
         me = await client.get_me()
-        print(f"✅ 已成功登录账号：@{me.username} | 用户ID：{me.id}")
+        print(f"✅ 已登录账号：@{me.username} | 用户ID：{me.id}")
         
-        # 频道配置检查，无有效频道直接退出
+        # 频道检查
         check_result = await check_channels(client)
         if not check_result:
             return
         
-        # 检查重复配置
+        # 重复配置提醒
         source_id_list = [c['source_id'] for c in valid_channels]
         if len(source_id_list) != len(set(source_id_list)):
-            print("⚠️  警告：检测到重复的源频道配置，重复项仅第一个生效")
+            print("⚠️  检测到重复的源频道，重复项仅第一个生效")
         
-        # 打印转发规则
+        # 规则打印
         print("\n=== 转发规则已生效 ===")
-        print(f"✅ 允许转发：文本≤{max_text_length}字 + 带有图片/视频/媒体的消息（含多图/多视频媒体组）")
-        print(f"❌ 禁止转发：纯文字消息、文本超{max_text_length}字的消息（无论是否带媒体）")
+        print(f"✅ 允许转发：带图片/视频的消息（含多图媒体组），清洗后文本≤{max_text_length}字")
+        print(f"❌ 禁止转发：纯文字消息、文本超{max_text_length}字的消息")
         for idx, channel in enumerate(valid_channels):
             print(f"配对{idx+1}：监听 {channel['source_config']} → 转发到 {channel['target']}")
         print("\n机器人已启动，正在监听消息...\n")
-        # ========== 媒体组合并转发处理 ==========
+
+        # 媒体组处理
         async def process_media_group(grouped_id):
             try:
+                # 等待足够时间，确保同组所有媒体全部到达
                 await asyncio.sleep(media_group_wait_time)
                 
                 async with media_group_lock:
@@ -155,27 +145,31 @@ async def main():
                 source_chat = group_data['source_chat']
                 target_channel = group_data['target_channel']
                 source_name = group_data['source_name']
-                # 1. 去重校验
+
+                # 去重校验
                 first_msg = msg_list[0]
                 if first_msg.id in processed_msg_ids:
-                    print(f"⏭️  已跳过 | 源：{source_name} | 原因：重复媒体组消息")
+                    print(f"⏭️  已跳过 | 源：{source_name} | 重复媒体组")
                     return
                 processed_msg_ids.append(first_msg.id)
-                # 2. 校验媒体有效性
+
+                # 提取有效媒体
                 valid_media = []
                 for msg in msg_list:
                     if isinstance(msg.media, (MessageMediaPhoto, MessageMediaDocument)):
                         valid_media.append(msg.media)
                 if not valid_media:
-                    print(f"⏭️  已拦截 | 源：{source_name} | 原因：媒体组内无有效图片/视频媒体")
+                    print(f"⏭️  已拦截 | 源：{source_name} | 无有效媒体")
                     return
-                # 3. 文本清洗与长度校验
+
+                # 文本处理（取第一条消息的文案，确保不丢失）
                 raw_text = first_msg.text or ""
                 cleaned_text = clean_text(raw_text)
                 if len(cleaned_text) > max_text_length:
-                    print(f"⏭️  已拦截 | 源：{source_name} | 原因：文本长度{len(cleaned_text)}，超过{max_text_length}字限制")
+                    print(f"⏭️  已拦截 | 源：{source_name} | 文本长度{len(cleaned_text)}，超过限制")
                     return
-                # 4. 执行合并转发
+
+                # 执行合并转发
                 await asyncio.sleep(forward_interval)
                 await client.send_message(
                     target_channel,
@@ -183,31 +177,33 @@ async def main():
                     file=valid_media,
                     silent=True
                 )
-                print(f"✅ 媒体组转发成功 | 源：{source_name} → 目标：{target_channel} | 媒体数量：{len(valid_media)} | 文案预览：{cleaned_text[:30]}")
+                print(f"✅ 媒体组转发成功 | 源：{source_name} → 目标：{target_channel} | 媒体数：{len(valid_media)} | 文案：{cleaned_text[:30]}")
             except Exception as e:
-                print(f"❌ 媒体组处理失败 | 错误详情：{e}")
-                # 异常时清理媒体组缓存，避免残留
+                print(f"❌ 媒体组处理失败 | 详情：{e}")
+                # 异常时清理缓存，避免残留
                 async with media_group_lock:
                     if grouped_id in media_group_cache:
                         del media_group_cache[grouped_id]
-        # ========== 消息监听器 ==========
+
+        # 消息监听器
         @client.on(events.NewMessage(chats=[c['source_id'] for c in valid_channels]))
         async def handler(event):
             try:
                 msg = event.message
                 source_chat = event.chat
-                source_username = source_chat.username
                 source_id = source_chat.id
-                source_name = f"@{source_username}" if source_username else f"频道ID:{source_id}"
+                source_name = f"@{source_chat.username}" if source_chat.username else f"频道ID:{source_id}"
                 grouped_id = msg.grouped_id
-                # 收到消息日志
+
                 print(f"📥 收到新消息 | 组ID：{grouped_id} | 源：{source_name}")
+
                 # 匹配目标频道
                 target_channel = get_target_channel(source_id)
                 if not target_channel:
-                    print(f"⏭️  已拦截 | 源：{source_name} | 原因：未匹配到对应的目标频道")
+                    print(f"⏭️  已拦截 | 源：{source_name} | 无匹配目标频道")
                     return
-                # ========== 处理媒体组（多图/多视频消息） ==========
+
+                # 处理媒体组
                 if grouped_id:
                     async with media_group_lock:
                         if grouped_id not in media_group_cache:
@@ -217,35 +213,35 @@ async def main():
                                 'target_channel': target_channel,
                                 'source_name': source_name
                             }
+                            # 仅第一次收到该组消息时，启动处理任务
                             asyncio.create_task(process_media_group(grouped_id))
+                        # 把当前媒体加入缓存
                         media_group_cache[grouped_id]['msg_list'].append(msg)
-                    print(f"📦 已加入媒体组缓存 | 组ID：{grouped_id} | 当前组内媒体数：{len(media_group_cache[grouped_id]['msg_list'])}")
+                    print(f"📦 已加入媒体组 | 组ID：{grouped_id} | 当前组内媒体数：{len(media_group_cache[grouped_id]['msg_list'])}")
                     return
-                # ========== 处理单媒体消息（单个图片/视频） ==========
-                # 消息去重
+
+                # 处理单媒体消息
                 if msg.id in processed_msg_ids:
-                    print(f"⏭️  已跳过 | 源：{source_name} | 原因：重复消息")
+                    print(f"⏭️  已跳过 | 源：{source_name} | 重复消息")
                     return
                 processed_msg_ids.append(msg.id)
-                
-                # 纯文字消息直接拦截
+
                 if not msg.media:
-                    print(f"⏭️  已拦截 | 源：{source_name} | 原因：纯文字消息，无图片/视频媒体")
+                    print(f"⏭️  已拦截 | 源：{source_name} | 纯文字消息")
                     return
-                
-                # 仅允许图片、视频类媒体
+
                 if not isinstance(msg.media, (MessageMediaPhoto, MessageMediaDocument)):
-                    print(f"⏭️  已拦截 | 源：{source_name} | 原因：非图片/视频类媒体")
+                    print(f"⏭️  已拦截 | 源：{source_name} | 非图片/视频媒体")
                     return
-                
-                # 文本清洗与长度校验
+
+                # 文本处理
                 raw_text = msg.text or ""
                 cleaned_text = clean_text(raw_text)
                 if len(cleaned_text) > max_text_length:
-                    print(f"⏭️  已拦截 | 源：{source_name} | 原因：文本长度{len(cleaned_text)}，超过{max_text_length}字限制")
+                    print(f"⏭️  已拦截 | 源：{source_name} | 文本长度{len(cleaned_text)}，超过限制")
                     return
-                
-                # 执行单媒体转发
+
+                # 转发
                 await asyncio.sleep(forward_interval)
                 await client.send_message(
                     target_channel,
@@ -253,17 +249,16 @@ async def main():
                     file=msg.media,
                     silent=True
                 )
-                print(f"✅ 单媒体转发成功 | 源：{source_name} → 目标：{target_channel} | 文案预览：{cleaned_text[:30]}")
+                print(f"✅ 单媒体转发成功 | 源：{source_name} → 目标：{target_channel} | 文案：{cleaned_text[:30]}")
             except Exception as e:
-                print(f"❌ 消息处理失败 | 错误详情：{e}")
-        
-        # 保持客户端运行
+                print(f"❌ 消息处理失败 | 详情：{e}")
+
         await client.run_until_disconnected()
-# 程序入口
+
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n✅ 程序已手动停止，会话已安全关闭")
+        print("\n✅ 程序已手动停止")
     except Exception as e:
         print(f"❌ 程序异常退出：{e}")
