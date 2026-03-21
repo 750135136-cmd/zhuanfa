@@ -1,6 +1,7 @@
 import os
 import re
 import asyncio
+from collections import deque
 from telethon import TelegramClient, events
 from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument, Channel
 # ========== 配置项 ==========
@@ -12,13 +13,18 @@ channels = [
     {
         'source': '@wenan77',
         'target': '@wnffx',
+    },
+    {
+        'source': '@xdgd18',
+        'target': '@hrgxx',
     }
 ]
 max_text_length = 50  # 最大允许的文本长度
-forward_interval = 0.8  # 转发间隔（秒），避免风控
-media_group_wait_time = 1.5  # 媒体组等待时间
-processed_msg_ids = set()  # 已转发消息ID缓存（仅用于去重）
+forward_interval = 3  # 转发间隔（秒），建议≥2秒，避免风控，新号建议5秒+
+media_group_wait_time = 2  # 媒体组等待时间，避免媒体接收不全
 max_cache_size = 1000  # 缓存最大容量，避免内存溢出
+# ========== 全局缓存优化 ==========
+processed_msg_ids = deque(maxlen=max_cache_size)  # 改用deque，自动FIFO淘汰旧数据
 media_group_cache = {}  # 媒体组临时缓存
 media_group_lock = asyncio.Lock()  # 异步锁
 # ========== 全局有效频道列表（已缓存真实ID） ==========
@@ -29,23 +35,25 @@ def standardize_username(username):
     if not username:
         return None
     return username.lstrip('@').lower()
-# ========== 文本清洗函数 ==========
+# ========== 文本清洗函数（优化正则，避免异常字符） ==========
 def clean_text(text):
     if not text:
         return ""
     # 移除http/https链接、t.me站内链接
-    text = re.sub(r'https?://[^\s\u4e00-\u9fa5，。！？；：""\'()（）]+|t\.me/[^\s\u4e00-\u9fa5，。！？；：""\'()（）]+', '', text)
+    text = re.sub(r'https?://\S+|t\.me/\S+', '', text)
     # 移除Telegram规范的@用户名
-    text = re.sub(r'@[a-zA-Z0-9_]{5,32}(?![a-zA-Z0-9_.])', '', text)
-    return text.strip()
-# ========== 修复后的频道匹配函数（100%兼容典藏频道） ==========
+    text = re.sub(r'@[a-zA-Z0-9_]{5,32}', '', text)
+    # 移除多余换行和空格
+    text = re.sub(r'\n+', '\n', text).strip()
+    return text
+# ========== 频道匹配函数 ==========
 def get_target_channel(source_id):
     """直接用频道真实唯一ID匹配，彻底解决典藏频道匹配问题"""
     for channel in valid_channels:
         if channel['source_id'] == source_id:
             return channel['target']
     return None
-# ========== 修复后的频道检查函数（缓存真实ID） ==========
+# ========== 频道检查与ID缓存 ==========
 async def check_channels(client):
     print("=== 正在检查频道配置 ===")
     global valid_channels
@@ -58,12 +66,10 @@ async def check_channels(client):
         # 检查源频道
         try:
             source_chat = await client.get_entity(source_config)
-            # 仅校验是否为频道类型，不强制要求用户名
             if not isinstance(source_chat, Channel):
                 print(f"⚠️  警告：配对{idx+1}的源 {source_config} 不是频道类型，已跳过")
                 all_valid = False
                 continue
-            # 打印频道真实信息，快速定位典藏频道问题
             real_username = source_chat.username if source_chat.username else '无（典藏用户名/无公开用户名）'
             print(f"ℹ️  频道真实信息 | 频道ID：{source_chat.id} | 绑定的公开用户名：@{real_username}")
             print(f"✅ 源频道校验通过，已加入监听列表")
@@ -83,11 +89,11 @@ async def check_channels(client):
             print(f"❌ 错误：配对{idx+1}的目标频道 {target_config} 无法访问，已跳过 | 详情：{e}")
             all_valid = False
             continue
-        # 校验通过，存入带真实ID的有效配置（核心修复）
+        # 校验通过，存入带真实ID的有效配置
         valid_list.append({
             'source_config': source_config,
             'target': target_config,
-            'source_id': source_chat.id  # 缓存源频道真实唯一ID，彻底解决匹配问题
+            'source_id': source_chat.id
         })
     # 更新全局有效频道列表
     valid_channels = valid_list
@@ -103,7 +109,17 @@ async def check_channels(client):
     return len(valid_channels) > 0
 # ========== 核心消息处理逻辑 ==========
 async def main():
-    async with TelegramClient(session_name, api_id, api_hash) as client:
+    # 客户端增加重连、超时配置，避免网络波动导致会话异常
+    client = TelegramClient(
+        session_name, 
+        api_id, 
+        api_hash,
+        auto_reconnect=True,
+        connection_retries=10,
+        retry_delay=5,
+        timeout=30
+    )
+    async with client:
         # 打印登录状态
         me = await client.get_me()
         print(f"✅ 已成功登录账号：@{me.username} | 用户ID：{me.id}")
@@ -113,7 +129,7 @@ async def main():
         if not check_result:
             return
         
-        # 检查重复配置（用真实ID校验，彻底避免重复）
+        # 检查重复配置
         source_id_list = [c['source_id'] for c in valid_channels]
         if len(source_id_list) != len(set(source_id_list)):
             print("⚠️  警告：检测到重复的源频道配置，重复项仅第一个生效")
@@ -139,15 +155,12 @@ async def main():
                 source_chat = group_data['source_chat']
                 target_channel = group_data['target_channel']
                 source_name = group_data['source_name']
-                source_id = source_chat.id
                 # 1. 去重校验
                 first_msg = msg_list[0]
                 if first_msg.id in processed_msg_ids:
                     print(f"⏭️  已跳过 | 源：{source_name} | 原因：重复媒体组消息")
                     return
-                processed_msg_ids.add(first_msg.id)
-                if len(processed_msg_ids) > max_cache_size:
-                    processed_msg_ids.pop()
+                processed_msg_ids.append(first_msg.id)
                 # 2. 校验媒体有效性
                 valid_media = []
                 for msg in msg_list:
@@ -173,7 +186,11 @@ async def main():
                 print(f"✅ 媒体组转发成功 | 源：{source_name} → 目标：{target_channel} | 媒体数量：{len(valid_media)} | 文案预览：{cleaned_text[:30]}")
             except Exception as e:
                 print(f"❌ 媒体组处理失败 | 错误详情：{e}")
-        # ========== 修复后的消息监听器（用真实ID注册，兼容典藏频道） ==========
+                # 异常时清理媒体组缓存，避免残留
+                async with media_group_lock:
+                    if grouped_id in media_group_cache:
+                        del media_group_cache[grouped_id]
+        # ========== 消息监听器 ==========
         @client.on(events.NewMessage(chats=[c['source_id'] for c in valid_channels]))
         async def handler(event):
             try:
@@ -181,12 +198,11 @@ async def main():
                 source_chat = event.chat
                 source_username = source_chat.username
                 source_id = source_chat.id
-                # 显示用户名/ID，方便日志查看
                 source_name = f"@{source_username}" if source_username else f"频道ID:{source_id}"
                 grouped_id = msg.grouped_id
-                # 收到消息日志，确认监听器正常工作
+                # 收到消息日志
                 print(f"📥 收到新消息 | 组ID：{grouped_id} | 源：{source_name}")
-                # 匹配目标频道（直接用ID匹配，100%命中）
+                # 匹配目标频道
                 target_channel = get_target_channel(source_id)
                 if not target_channel:
                     print(f"⏭️  已拦截 | 源：{source_name} | 原因：未匹配到对应的目标频道")
@@ -201,9 +217,7 @@ async def main():
                                 'target_channel': target_channel,
                                 'source_name': source_name
                             }
-                            # 启动等待任务，合并媒体组
                             asyncio.create_task(process_media_group(grouped_id))
-                        # 将当前媒体加入对应媒体组缓存
                         media_group_cache[grouped_id]['msg_list'].append(msg)
                     print(f"📦 已加入媒体组缓存 | 组ID：{grouped_id} | 当前组内媒体数：{len(media_group_cache[grouped_id]['msg_list'])}")
                     return
@@ -212,16 +226,14 @@ async def main():
                 if msg.id in processed_msg_ids:
                     print(f"⏭️  已跳过 | 源：{source_name} | 原因：重复消息")
                     return
-                processed_msg_ids.add(msg.id)
-                if len(processed_msg_ids) > max_cache_size:
-                    processed_msg_ids.pop()
+                processed_msg_ids.append(msg.id)
                 
-                # 核心规则1：纯文字消息直接拦截
+                # 纯文字消息直接拦截
                 if not msg.media:
                     print(f"⏭️  已拦截 | 源：{source_name} | 原因：纯文字消息，无图片/视频媒体")
                     return
                 
-                # 核心规则2：仅允许图片、视频类媒体
+                # 仅允许图片、视频类媒体
                 if not isinstance(msg.media, (MessageMediaPhoto, MessageMediaDocument)):
                     print(f"⏭️  已拦截 | 源：{source_name} | 原因：非图片/视频类媒体")
                     return
