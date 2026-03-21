@@ -12,9 +12,13 @@ channels = [
     {
         'source': '@wenan77',
         'target': '@wnffx',
+    },
+    {
+        'source': '@xdgd19',
+        'target': '@hrgxx',
     }
 ]
-max_text_length = 150  # 最大允许的文本长度
+max_text_length = 50  # 最大允许的文本长度
 forward_interval = 0.8  # 转发间隔（秒），避免风控
 media_group_wait_time = 1.5  # 媒体组等待时间
 processed_msg_ids = set()  # 已转发消息ID缓存（仅用于去重）
